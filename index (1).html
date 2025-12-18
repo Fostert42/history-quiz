@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Тест по истории</title>
+  <style>
+    :root{
+      --bg:#ffffff; --fg:#111; --muted:#666; --card:#ffffff; --border:#ddd;
+      --ok:#1b8a3a; --okbg:#e8fff0; --bad:#b02a37; --badbg:#ffe8ea;
+    }
+    [data-theme="dark"]{
+      --bg:#0f1115; --fg:#e7e7e7; --muted:#a8a8a8; --card:#141824; --border:#2a3143;
+      --ok:#2bd46f; --okbg:#0f2a1b; --bad:#ff5c6c; --badbg:#2a1216;
+    }
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;max-width:980px;margin:24px auto;padding:0 16px;line-height:1.35;background:var(--bg);color:var(--fg)}
+    header{display:flex;gap:12px;flex-wrap:wrap;align-items:center;justify-content:space-between;margin-bottom:16px}
+    .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+    select,input,button{font:inherit;padding:8px 10px;background:var(--card);color:var(--fg);border:1px solid var(--border);border-radius:10px}
+    button{cursor:pointer}
+    .card{border:1px solid var(--border);border-radius:12px;padding:16px;background:var(--card)}
+    .muted{color:var(--muted)}
+    .opts{margin-top:10px;display:grid;gap:8px}
+    label{display:block;border:1px solid var(--border);border-radius:12px;padding:10px;cursor:pointer;background:transparent}
+    label.correct{border-color:var(--ok);background:var(--okbg)}
+    label.wrong{border-color:var(--bad);background:var(--badbg)}
+    .footer{display:flex;gap:10px;flex-wrap:wrap;align-items:center;justify-content:space-between;margin-top:12px}
+    .hidden{display:none}
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <div style="font-weight:700">Тест по истории</div>
+      <div class="muted" id="meta">Подготовка…</div>
+    </div>
+    <div class="row">
+      <button id="themeToggle" title="Переключить тему">Тема: авто</button>
+      <select id="theme" disabled><option>Загрузка…</option></select>
+      <input id="limit" type="number" min="1" step="1" value="50" style="width:110px" title="Сколько вопросов в попытке" />
+      <button id="start" disabled>Начать</button>
+      <button id="reset" class="hidden">Сброс</button>
+    </div>
+  </header>
+
+  <main class="card">
+    <div id="screen-loading" class="muted">Загрузка базы вопросов…</div>
+
+    <div id="screen-quiz" class="hidden">
+      <div class="muted" id="progress"></div>
+      <h2 id="qtext" style="margin:10px 0 6px"></h2>
+      <div class="opts" id="opts"></div>
+
+      <div class="footer">
+        <div class="row">
+          <button id="check">Проверить</button>
+          <button id="next" disabled>Далее</button>
+        </div>
+        <div class="muted" id="score"></div>
+      </div>
+    </div>
+
+    <div id="screen-result" class="hidden">
+      <h2>Результат</h2>
+      <div id="resultText" class="muted"></div>
+      <div style="margin-top:12px" class="row">
+        <button id="restart">Новая попытка</button>
+        <button id="clearSeen" title="Сбросить историю показанных вопросов">Сбросить историю</button>
+      </div>
+    </div>
+  </main>
+
+
+<script>
+const $ = (id)=>document.getElementById(id);
+
+let DATA=null; // parsed payload
+let all = [];
+let pool = [];
+let idx = 0;
+let answered = false;
+let right = 0;
+
+// ---- Theme ----
+const THEME_KEY = 'historyQuiz.theme';
+function applyTheme(mode){
+  const root=document.documentElement;
+  root.removeAttribute('data-theme');
+  if(mode==='dark') root.setAttribute('data-theme','dark');
+  if(mode==='light') root.setAttribute('data-theme','light');
+  $('themeToggle').textContent = 'Тема: ' + (mode==='auto' ? 'авто' : mode);
+}
+function initTheme(){
+  const saved=localStorage.getItem(THEME_KEY) || 'auto';
+  if(saved==='auto'){
+    const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    applyTheme(prefersDark ? 'dark' : 'light');
+    $('themeToggle').textContent='Тема: авто';
+  } else {
+    applyTheme(saved);
+  }
+}
+$('themeToggle').addEventListener('click', ()=>{
+  const cur=localStorage.getItem(THEME_KEY) || 'auto';
+  const next = (cur==='auto') ? 'dark' : (cur==='dark' ? 'light' : 'auto');
+  localStorage.setItem(THEME_KEY, next);
+  initTheme();
+});
+
+// ---- Seen tracking ----
+const SEEN_KEY = 'historyQuiz.seen.v1';
+function loadSeen(){
+  try{ return JSON.parse(localStorage.getItem(SEEN_KEY) || '{}'); } catch(e){ return {}; }
+}
+function saveSeen(seen){ localStorage.setItem(SEEN_KEY, JSON.stringify(seen)); }
+function markSeen(q){
+  const seen=loadSeen();
+  const scope = (q.theme || 'Все темы');
+  if(!seen[scope]) seen[scope]={};
+  seen[scope][q.id]=1;
+  if(!seen['_all']) seen['_all']={};
+  seen['_all'][q.id]=1;
+  saveSeen(seen);
+}
+function clearSeen(){ localStorage.removeItem(SEEN_KEY); }
+
+function shuffle(a){
+  for(let i=a.length-1;i>0;i--){
+    const j=Math.floor(Math.random()*(i+1));
+    [a[i],a[j]]=[a[j],a[i]];
+  }
+  return a;
+}
+
+function themesFrom(all){
+  const s=new Set(all.map(q=>q.theme));
+  return ['Все темы', ...Array.from(s).sort((a,b)=>a.localeCompare(b,'ru'))];
+}
+
+function renderThemes(){
+  const sel=$('theme');
+  sel.innerHTML='';
+  for(const t of themesFrom(all)){
+    const o=document.createElement('option');
+    o.value=t; o.textContent=t;
+    sel.appendChild(o);
+  }
+}
+
+function show(screenId){
+  for(const id of ['screen-loading','screen-quiz','screen-result']) $(id).classList.add('hidden');
+  $(screenId).classList.remove('hidden');
+}
+
+function parseDataOnce(){
+  if(DATA) return;
+  // Lazy parse of big JSON
+  DATA = window.__LOADED_DATA__;
+  all = (DATA && DATA.questions) ? DATA.questions : [];
+  $('meta').textContent = `Загружено вопросов: ${all.length}`;
+  renderThemes();
+  $('theme').disabled=false;
+  $('start').disabled=false;
+  $('screen-loading').textContent = 'Нажмите «Начать», чтобы запустить попытку.';
+}
+
+function buildPool(){
+  const theme=$('theme').value;
+  const limit=Math.max(1, parseInt($('limit').value||'50',10));
+  const filtered = (theme==='Все темы') ? all : all.filter(q=>q.theme===theme);
+
+  const seen=loadSeen();
+  const scope = (theme==='Все темы') ? '_all' : theme;
+  const seenMap = seen[scope] || {};
+
+  const unseen = filtered.filter(q=>!seenMap[q.id]);
+  const seenOnes = filtered.filter(q=>!!seenMap[q.id]);
+
+  let selected=[];
+  if(limit < filtered.length){
+    const unseenTarget = Math.ceil(limit*0.7);
+    selected = shuffle(unseen.slice()).slice(0, Math.min(unseenTarget, unseen.length));
+    if(selected.length < limit){
+      const rest = limit - selected.length;
+      const remainUnseen = unseen.filter(q=>!selected.includes(q));
+      const fillFrom = shuffle(remainUnseen.slice().concat(shuffle(seenOnes.slice())));
+      selected = selected.concat(fillFrom.slice(0, rest));
+    }
+  } else {
+    selected = shuffle(filtered.slice()).slice(0, Math.min(limit, filtered.length));
+  }
+
+  pool = selected;
+  idx = 0; right = 0; answered=false;
+  $('reset').classList.remove('hidden');
+}
+
+function renderQuestion(){
+  answered=false;
+  $('next').disabled=true;
+  const q=pool[idx];
+  const remaining = pool.length - (idx+1);
+  $('progress').textContent = `Вопрос ${idx+1} из ${pool.length} • Осталось: ${remaining} • Тема: ${q.theme}`;
+  $('qtext').textContent = q.question;
+  $('score').textContent = `Правильно: ${right}`;
+
+  const box=$('opts');
+  box.innerHTML='';
+
+  const order=[0,1,2,3].map(i=>({i, text:q.options[i]}));
+  shuffle(order);
+
+  order.forEach((o, k)=>{
+    const id=`opt_${k}`;
+    const wrap=document.createElement('label');
+    wrap.htmlFor=id;
+    wrap.dataset.orig = String(o.i+1);
+    wrap.innerHTML = `<input type="radio" name="ans" id="${id}" value="${o.i+1}" /> ${o.text}`;
+    box.appendChild(wrap);
+  });
+}
+
+function getSelected(){
+  const el=document.querySelector('input[name="ans"]:checked');
+  return el ? parseInt(el.value,10) : null;
+}
+
+function mark(correct, chosen){
+  const labels=[...$('opts').querySelectorAll('label')];
+  labels.forEach(l=>{
+    const v=parseInt(l.dataset.orig,10);
+    if(correct.includes(v)) l.classList.add('correct');
+    if(chosen===v && !correct.includes(v)) l.classList.add('wrong');
+  });
+}
+
+function check(){
+  if(answered) return;
+  const chosen=getSelected();
+  if(chosen===null) return;
+  const q=pool[idx];
+  const correct=q.correct;
+  if(correct.includes(chosen)) right += 1;
+  $('score').textContent = `Правильно: ${right}`;
+  mark(correct, chosen);
+  answered=true;
+  $('next').disabled=false;
+  markSeen(q);
+}
+
+function next(){
+  if(idx < pool.length-1){
+    idx += 1;
+    renderQuestion();
+  } else {
+    $('resultText').textContent = `Готово. Результат: ${right} из ${pool.length}.`;
+    show('screen-result');
+  }
+}
+
+function start(){
+  parseDataOnce().then(()=>{
+    buildPool();
+  show('screen-quiz');
+  renderQuestion();
+  });
+}
+
+function resetAll(){
+  pool=[]; idx=0; right=0;
+  $('reset').classList.add('hidden');
+  show('screen-loading');
+  $('screen-loading').textContent = 'Нажмите «Начать», чтобы запустить попытку.';
+}
+
+$('start').addEventListener('click', start);
+$('check').addEventListener('click', check);
+$('next').addEventListener('click', next);
+$('restart').addEventListener('click', ()=>{ start(); });
+$('reset').addEventListener('click', resetAll);
+$('clearSeen').addEventListener('click', ()=>{ clearSeen(); $('resultText').textContent += ' (история очищена)'; });
+
+document.addEventListener('keydown', (e)=>{
+  if($('screen-quiz').classList.contains('hidden')) return;
+  if(e.key==='Enter'){
+    if(!answered) check(); else next();
+  }
+});
+
+// Let browser paint first, then parse data
+initTheme();
+setTimeout(()=>{
+  parseDataOnce();
+}, 30);
+</script>
+</body>
+</html>
