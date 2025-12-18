@@ -32,7 +32,7 @@
   <header>
     <div>
       <div style="font-weight:700">Тест по истории</div>
-      <div class="muted" id="meta">Подготовка…</div>
+      <div class="muted" id="meta">Загрузка…</div>
     </div>
     <div class="row">
       <button id="themeToggle" title="Переключить тему">Тема: авто</button>
@@ -70,11 +70,10 @@
     </div>
   </main>
 
-
 <script>
 const $ = (id)=>document.getElementById(id);
 
-let DATA=null; // parsed payload
+let DATA=null;     // {count, questions}
 let all = [];
 let pool = [];
 let idx = 0;
@@ -82,7 +81,7 @@ let answered = false;
 let right = 0;
 
 // ---- Theme ----
-const THEME_KEY = 'historyQuiz.theme';
+const THEME_KEY = 'historyQuiz.theme'; // 'auto' | 'dark' | 'light'
 function applyTheme(mode){
   const root=document.documentElement;
   root.removeAttribute('data-theme');
@@ -152,16 +151,19 @@ function show(screenId){
   $(screenId).classList.remove('hidden');
 }
 
-function parseDataOnce(){
-  if(DATA) return;
-  // Lazy parse of big JSON
-  DATA = window.__LOADED_DATA__;
-  all = (DATA && DATA.questions) ? DATA.questions : [];
+// ---- Load questions.json (GitHub Pages friendly) ----
+async function loadDataOnce(){
+  if(DATA) return DATA;
+  const r = await fetch('questions.json', { cache: 'no-store' });
+  if(!r.ok) throw new Error('HTTP ' + r.status + ' loading questions.json');
+  DATA = await r.json();
+  all = DATA.questions || [];
   $('meta').textContent = `Загружено вопросов: ${all.length}`;
   renderThemes();
   $('theme').disabled=false;
   $('start').disabled=false;
   $('screen-loading').textContent = 'Нажмите «Начать», чтобы запустить попытку.';
+  return DATA;
 }
 
 function buildPool(){
@@ -258,12 +260,17 @@ function next(){
   }
 }
 
-function start(){
-  parseDataOnce().then(()=>{
+async function start(){
+  try{
+    await loadDataOnce();
     buildPool();
-  show('screen-quiz');
-  renderQuestion();
-  });
+    show('screen-quiz');
+    renderQuestion();
+  } catch(e){
+    $('meta').textContent = 'Ошибка загрузки вопросов';
+    $('screen-loading').textContent = 'Не удалось загрузить questions.json. Проверь, что файл лежит рядом с index.html.';
+    console.error(e);
+  }
 }
 
 function resetAll(){
@@ -276,7 +283,7 @@ function resetAll(){
 $('start').addEventListener('click', start);
 $('check').addEventListener('click', check);
 $('next').addEventListener('click', next);
-$('restart').addEventListener('click', ()=>{ start(); });
+$('restart').addEventListener('click', start);
 $('reset').addEventListener('click', resetAll);
 $('clearSeen').addEventListener('click', ()=>{ clearSeen(); $('resultText').textContent += ' (история очищена)'; });
 
@@ -287,11 +294,8 @@ document.addEventListener('keydown', (e)=>{
   }
 });
 
-// Let browser paint first, then parse data
 initTheme();
-setTimeout(()=>{
-  parseDataOnce();
-}, 30);
+setTimeout(()=>{ loadDataOnce().catch(()=>{}); }, 50);
 </script>
 </body>
 </html>
